@@ -1,0 +1,10 @@
+# ROS2 workspace build/install/log klasörleri
+build/
+install/
+log/
+
+# Python cache dosyaları ve derlenmişler
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd

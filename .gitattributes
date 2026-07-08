@@ -1,0 +1,1 @@
+src/pipe_segmentation/models/unet_cable_segmentation.pth filter=lfs diff=lfs merge=lfs -text
