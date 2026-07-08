@@ -15,8 +15,8 @@ setup(
     zip_safe=True,
     maintainer='baurov',
     maintainer_email='mustafaktaskemal@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Coordinate-based navigation controller for the AUV stack.',
+    license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
