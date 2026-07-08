@@ -1,45 +1,47 @@
 #!/usr/bin/env python3
-"""Coordinate-based navigation controller for the AUV stack."""
 import rclpy
 from rclpy.node import Node
 import math
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float64
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Float64
 from movement_control.state_machine import StateMachine
-from .compute_distance import bearing_to_target, euclidean_distance, normalize_angle, relative_vector
+
 
 class NavigationControlNode(Node):
     def __init__(self):
         super().__init__('navigation_control_node')
 
-        # ---- Current / Target coordinates ----
-        # x/y refer to the local frame that starts at (0, 0, 0).
-        self.declare_parameter('current_x', 0.0)
-        self.declare_parameter('current_y', 0.0)
-        self.declare_parameter('current_z', 0.0)
+        # ---- Hedef Konum ----
         self.declare_parameter('target_x', 0.0)
         self.declare_parameter('target_y', 0.0)
         self.declare_parameter('target_z', 0.0)
 
-        self.current_x = self.get_parameter('current_x').get_parameter_value().double_value
-        self.current_y = self.get_parameter('current_y').get_parameter_value().double_value
-        self.current_z = self.get_parameter('current_z').get_parameter_value().double_value
         self.target_x = self.get_parameter('target_x').get_parameter_value().double_value
         self.target_y = self.get_parameter('target_y').get_parameter_value().double_value
         self.target_z = self.get_parameter('target_z').get_parameter_value().double_value
 
-        # ---- Current heading ----
+        # ---- Mevcut Konum ----
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.current_z = 0.0
         self.current_yaw = 0.0
 
-        # ---- Control parameters ----
+        # ---- PID / kontrol parametreleri ----
         self.linear_speed = 0.5
         self.angular_speed = 0.3
         self.depth_speed = 0.3
         self.distance_tolerance = 0.05
-        self.depth_tolerance = 0.10
         self.yaw_tolerance = math.radians(10)
-        self.max_forward_speed = 0.5
+
+        # ---- Mesafe hesaplaması için değişkenler ----,
+        dx = self.target_x - self.current_x
+        dy = self.target_y - self.current_y
+        self.target_angle = math.atan2(dy, dx)
+
+        self.total_distance_traveled = 0.0
+        self.initial_distance = math.hypot(dx, dy)  # Başlangıçta hedef ile aradaki mesafeyi sakla
+        self.last_time = self.get_clock().now()
 
         # ---- State Machine ----
         self.state_machine = StateMachine()
@@ -59,7 +61,7 @@ class NavigationControlNode(Node):
 
     def quaternion_to_yaw(self, x, y, z, w):
         siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        cosy_cosp = 1.0 - 2.0 * (y*y + z*z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def imu_callback(self, msg):
@@ -68,39 +70,20 @@ class NavigationControlNode(Node):
 
     def depth_callback(self, msg):
         self.current_z = msg.data
-        self.get_logger().debug(f"Mevcut Derinlik: {self.current_z:.2f} m")
+        self.get_logger().info(f"Mevcut Derinlik: {self.current_z:.2f} m")
 
     def compass_callback(self, msg):
         self.current_yaw = math.radians((msg.data -245) % 360)
-        self.get_logger().debug(f"Mevcut Yaw: {math.degrees(self.current_yaw):.2f}°")
+        self.get_logger().info(f"Mevcut Yaw: {math.degrees(self.current_yaw):.2f}°")
+
+    def normalize_angle(self, angle):
+        return math.atan2(math.sin(angle), math.cos(angle))
 
     def control_loop(self):
+        # now = self.get_clock().now()
+        # dt = (now - self.last_time).nanoseconds * 1e-9
+        # self.last_time = now
         twist = Twist()
-        delta_x, delta_y, delta_z = relative_vector(
-            self.current_x,
-            self.current_y,
-            self.current_z,
-            self.target_x,
-            self.target_y,
-            self.target_z,
-        )
-        distance_to_target = euclidean_distance(0.0, 0.0, delta_x, delta_y)
-        target_bearing = bearing_to_target(
-            0.0,
-            0.0,
-            delta_x,
-            delta_y,
-        )
-        yaw_error = normalize_angle(target_bearing - self.current_yaw)
-        depth_error = delta_z
-
-        self.get_logger().info(
-            f"Target ({self.target_x:.2f}, {self.target_y:.2f}, {self.target_z:.2f}) | "
-            f"Current ({self.current_x:.2f}, {self.current_y:.2f}, {self.current_z:.2f}) | "
-            f"Delta ({delta_x:.2f}, {delta_y:.2f}, {delta_z:.2f}) | "
-            f"distance={distance_to_target:.2f} m | yaw_error={math.degrees(yaw_error):.1f} deg | "
-            f"depth_error={depth_error:.2f} m"
-        )
 
         # -------------------- INIT --------------------
         if self.state_machine.state == "INIT":
@@ -109,13 +92,16 @@ class NavigationControlNode(Node):
 
         # ---------------- DEPTH CONTROL ----------------
         elif self.state_machine.state == "DEPTH_CONTROL":
-            if abs(depth_error) > self.depth_tolerance:
+            depth_error = self.target_z - self.current_z
+            if abs(depth_error) > 0.1:
                 twist.linear.z = self.depth_speed if depth_error > 0 else -self.depth_speed
             else:
                 self.state_machine.transition("YAW_CONTROL")
 
         # ---------------- YAW CONTROL ----------------
         elif self.state_machine.state == "YAW_CONTROL":
+            yaw_error = self.normalize_angle(self.target_angle - self.current_yaw)
+
             if abs(yaw_error) > self.yaw_tolerance:
                 twist.angular.z = self.angular_speed if yaw_error > 0 else -self.angular_speed
             else:
@@ -123,9 +109,16 @@ class NavigationControlNode(Node):
 
         # ---------------- GO FORWARD ----------------
         elif self.state_machine.state == "GO_FORWARD":
-            if distance_to_target > self.distance_tolerance:
-                twist.linear.x = min(self.linear_speed, self.max_forward_speed)
-            else:
+            twist.linear.x = self.linear_speed
+            self.total_distance_traveled += self.linear_speed * 0.060
+            distance_to_target = max(0.0, self.initial_distance - self.total_distance_traveled)
+
+            self.get_logger().info(
+                f"Alınan yol: {self.total_distance_traveled:.2f} m | "
+                f"Kalan mesafe: {distance_to_target:.2f} m"
+            )
+
+            if distance_to_target <= self.distance_tolerance:
                 self.get_logger().info("Hedefe ulaşıldı!")
                 self.state_machine.transition("STOP")
 
@@ -139,7 +132,6 @@ class NavigationControlNode(Node):
         self.cmd_vel_pub.publish(twist)
 
 
-
 def main(args=None):
     rclpy.init(args=args)
     node = NavigationControlNode()
@@ -150,6 +142,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
