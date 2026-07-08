@@ -7,13 +7,14 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float64
 from sensor_msgs.msg import Imu
 from movement_control.state_machine import StateMachine
-from .compute_distance import bearing_to_target, euclidean_distance, normalize_angle
+from .compute_distance import bearing_to_target, euclidean_distance, normalize_angle, relative_vector
 
 class NavigationControlNode(Node):
     def __init__(self):
         super().__init__('navigation_control_node')
 
         # ---- Current / Target coordinates ----
+        # x/y refer to the local frame that starts at (0, 0, 0).
         self.declare_parameter('current_x', 0.0)
         self.declare_parameter('current_y', 0.0)
         self.declare_parameter('current_z', 0.0)
@@ -75,24 +76,28 @@ class NavigationControlNode(Node):
 
     def control_loop(self):
         twist = Twist()
-        distance_to_target = euclidean_distance(
+        delta_x, delta_y, delta_z = relative_vector(
             self.current_x,
             self.current_y,
+            self.current_z,
             self.target_x,
             self.target_y,
+            self.target_z,
         )
+        distance_to_target = euclidean_distance(0.0, 0.0, delta_x, delta_y)
         target_bearing = bearing_to_target(
-            self.current_x,
-            self.current_y,
-            self.target_x,
-            self.target_y,
+            0.0,
+            0.0,
+            delta_x,
+            delta_y,
         )
         yaw_error = normalize_angle(target_bearing - self.current_yaw)
-        depth_error = self.target_z - self.current_z
+        depth_error = delta_z
 
         self.get_logger().info(
             f"Target ({self.target_x:.2f}, {self.target_y:.2f}, {self.target_z:.2f}) | "
             f"Current ({self.current_x:.2f}, {self.current_y:.2f}, {self.current_z:.2f}) | "
+            f"Delta ({delta_x:.2f}, {delta_y:.2f}, {delta_z:.2f}) | "
             f"distance={distance_to_target:.2f} m | yaw_error={math.degrees(yaw_error):.1f} deg | "
             f"depth_error={depth_error:.2f} m"
         )
@@ -119,7 +124,7 @@ class NavigationControlNode(Node):
         # ---------------- GO FORWARD ----------------
         elif self.state_machine.state == "GO_FORWARD":
             if distance_to_target > self.distance_tolerance:
-                twist.linear.x = self.linear_speed
+                twist.linear.x = min(self.linear_speed, self.max_forward_speed)
             else:
                 self.get_logger().info("Hedefe ulaşıldı!")
                 self.state_machine.transition("STOP")
